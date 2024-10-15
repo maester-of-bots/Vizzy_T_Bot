@@ -76,7 +76,7 @@ class db:
         if spam:
             bots = ['spam']
         else:
-            bots = os.listdir('bots')
+            bots = os.listdir('data')
 
         self.comment_ids = {}
 

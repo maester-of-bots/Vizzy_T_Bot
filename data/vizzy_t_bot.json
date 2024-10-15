@@ -4,10 +4,10 @@
   "keywords": ["vizzy t", "vissy t"],
   "maesters": ["_thc-lab"],
   "subreddits": {
-    "primary": ["freefolk", "houseofthedragon", "vizzy_t_bot", "skyrimmemes", "vizzy_t_test"],
+    "primary": ["freefolk", "houseofthedragon", "vizzy_t_bot", "vizzy_t_test"],
     "canon": ["asofiaf", "hotd", "asoifcirclejerk", "gameofthrones", "freefolksimulator"],
     "test": ["vizzy_t_test"],
-    "other": ["stonkymemes","SoapBoxBeers", "biscuit_meltdown", "shitboxbeers", "BSFT"]
+    "other": ["BSFT"]
   },
   "sentience": {
       "enabled": true,

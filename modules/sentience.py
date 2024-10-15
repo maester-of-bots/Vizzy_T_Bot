@@ -1,65 +1,49 @@
-from dotenv import load_dotenv
 import os
 import openai
 import praw
+from modules.az_vault import *
+import requests
 
 import requests
+import json
 
 from datetime import *
 
-load_dotenv()
-openai.api_key = os.getenv('sentient_v')
+vault = keyvault()
 
-# Fastest
+endpoint_ID = vault.get_secret('THCEndpointID')
+endpoint_secret = vault.get_secret('THCEndpointSecret')
+endpoint_url = vault.get_secret('THCEndpointURL')
 
-openai_models = {
-    "ada": {
-        "1000": 0.0004,
-        "1": 0.0004/1000,
-        "name": 'text-ada-001'
-    },
-    "babbage": {
-        "1000": 0.0005,
-        "1": 0.0005/1000,
-        "name": 'text-babbage-001'
-    },
-    "curie": {
-        "1000": 0.0020,
-        "1": 0.0020/1000,
-        "name": 'text-curie-001'
-    },
-    "davinci": {
-        "1000": 0.0200,
-        "1": 0.0200/1000,
-        "name": 'text-davinci-002'
-    },
-}
+
+
 
 def isComment(obj):
     return isinstance(obj,praw.models.Comment)
 
 
-def tokenCalculator(comment, model):
-    """ Return the amount of tokens this comment would represent"""
-    spaces = comment.count(' ')
-    words = len(comment)
-    chars = words - spaces
-    tokens = chars / 4
+def render_image_azure(username):
+    data = {
+        "prompt": f"Regal tapestries decorated in the style of their King's online username, {username}",
+        "size": "1024x1024",
+        "quality": "hd",
+        "style": "vivid",
+        "user": "Vizzy T",
+        endpoint_ID: endpoint_secret
+      }
 
-    # Dollar amounts
-    costs = {
-        "ada": tokens * openai_models["ada"]["1"],
-        "babbage": tokens * openai_models["babbage"]["1"],
-        "curie": tokens * openai_models["curie"]["1"],
-        "davinci": tokens * openai_models["davinci"]["1"],
-    }
+    headers = {'Content-Type': 'application/json'}
 
-    return tokens, costs[model]
+    data = json.dumps(data)
+    response = requests.post(endpoint_url, data=data, headers=headers)
+    final = response.json()
+    # revised_prompt = final['revised_prompt']
+    url = final['url']
+    return url
 
 
 def WOULDYOULIKETOSEETHETAPESTRIES(prompt):
-    full_prompt = f"Regal tapestries adorned with {prompt}"
-    image_resp = openai.Image.create(prompt=full_prompt, n=1, size='1024x1024')
+    image_resp = render_image_azure(prompt)
 
     url = image_resp['data'][0]['url']
 
@@ -70,7 +54,7 @@ def WOULDYOULIKETOSEETHETAPESTRIES(prompt):
     filename = f"Tapestries_{timestamp}.jpeg"
 
     payload = {
-        'code': 'fuck you you fucking fuck',
+        'code': endpoint_secret,
         'url': url,
         'filename': filename,
         'subdir': 'tapestries'
@@ -85,20 +69,7 @@ def get_sentient(comment, bot):
     # Craft the initial base
     base_list = bot['sentience']['prompt']
 
-    base = f"""The following is a conversation with Viserys I Targaryen, a character from the show "House of the Dragon", or Vizzy T.
-    .
-    
-    .
-    """
-
     base = "\n".join(base_list)
-
-    if "bobby-b-bot" in comment.author.name.lower() and bot == 'vizzy_t_bot':
-        base += f'\nVizzy T will speak to {comment.author.name} as a king would speak to a member of his court, and commands respect from them.\n'
-    elif "vizzy_t_bot" in comment.author.name.lower() and bot == 'bobby-b-bot_':
-        base += "\nVizzy T recognizes bobby-b-bot_ as King Robert Baratheon, a future King of Westeros."
-    else:
-        base += f'\nBobby B will speak to {comment.author.name} as a king would speak to a member of his court, and commands respect from them.\n'
 
     reading = True
     current = comment

@@ -1,10 +1,45 @@
-from modules.cloud_sql import *
-from modules.for_reddit import *
-from modules.status import *
+from modules.database import *
+from modules.reddit import *
 from modules.sentience import *
 
 import pytz
 from random import *
+import socket
+import requests
+
+def get_ip():
+    return requests.get('https://ipv4.canhazip.com').text.strip()
+
+
+def resolve_name(name):
+    results = socket.gethostbyname_ex(name)
+    ips = []
+    for thing in results:
+        if thing == []:
+            check = "thc"
+        elif type(thing) == list:
+            check = thing[0]
+        elif type(thing) == str:
+            check = thing
+        else:
+            check = "thc"
+        if "thc" in check:
+            pass
+        else:
+            ips.append(check)
+    return ips[0]
+
+
+def is_production():
+    ip = get_ip()
+    print(ip)
+    if ip == resolve_name('thc-lab.net') or '172.190.216.87' in ip:
+        print("We are in production")
+        return True
+    else:
+        print("We are in Test")
+        return False
+
 
 
 class kingbot:
@@ -12,15 +47,28 @@ class kingbot:
 
         # Are we running in production or testing?
         self.production = is_production()
+        self.vault = keyvault()
 
-        # Load in Vizzy, Bobby, and Tyrion
-        self.all_bots = makeBots()
+        # Load in Vizzy information
+        file = os.path.join('data', "vizzy_t_bot.json")
+        with open(file, 'r') as lines:
+            char_lines = lines.read()
+            self.data = json.loads(char_lines)
+
+        self.data['r'] = praw.Reddit(
+            client_id=self.vault.get_secret(self.data['secrets'][0]),
+            client_secret=self.vault.get_secret(self.data['secrets'][1]),
+            password=self.vault.get_secret(self.data['secrets'][2]),
+            user_agent=self.vault.get_secret(self.data['secrets'][3]),
+            username=self.vault.get_secret(self.data['secrets'][4])
+        )
+
 
         # Grab the quotes
-        self.quotes = self.all_bots['vizzy_t_bot']['quotes']
+        self.quotes = self.data['quotes']
 
         # Set default Reddit object to be Vizzy's Reddit
-        self.reddit = self.all_bots['vizzy_t_bot']['r']
+        self.reddit = self.data['r']
 
         # Initialize cloud database
         self.db = db()
@@ -35,13 +83,14 @@ class kingbot:
         self.stream = praw.models.util.stream_generator(lambda **kwargs: submissions_and_comments(self.subreddit, **kwargs), skip_existing=False)
 
         # Grab the timezone
-        self.tz = pytz.timezone(self.all_bots['vizzy_t_bot']['sentience']['timezone'])
+        self.tz = pytz.timezone(self.data['sentience']['timezone'])
 
         print("Configuration loaded successfully, Reddit initialized.")
 
-    def make_comment(self,comment, response, bot):
 
-        bot_reddit = self.all_bots[bot]['r']
+    def make_comment(self,comment, response):
+
+        bot_reddit = self.data['r']
 
         if isPost(comment):
             # Initialize the comment using the provided bot
@@ -51,40 +100,29 @@ class kingbot:
 
         new_comment.reply(body=response)
 
-        self.db.write_obj(comment.id, bot)
+        self.db.write_obj(comment.id, "vizzy_t_bot")
 
     def make_subs(self):
-        """Multi-function, updated 2023-2-23
-         Get a text-based list of the subreddits we should be watching based on the bot's location
-         """
-
         if not self.production:
-
             return 'vizzy_t_test'
-
         else:
-            for bot in self.all_bots:
+            # Get a list of the subreddit types
+            sub_categories = self.data['subreddits'].keys()
 
+            # Empty list for subreddits to crawl
+            subs = []
 
-
-                # Get a list of the subreddit types
-                sub_categories = self.all_bots[bot]['subreddits'].keys()
-
-                # Empty list for subreddits to crawl
-                subs = []
-
-                # Iterate through the subreddit categories
-                for category in sub_categories:
-                    # Skip vizzy_t_test if we're in production
-                    if self.production and category == 'test':
-                        pass
-                    else:
-                        for sub in self.all_bots[bot]['subreddits'][category]:
-                            if sub not in subs:
-                                subs.append(sub)
-                sublist = '+'.join(subs)
-
-                return sublist
+            # Iterate through the subreddit categories
+            for category in sub_categories:
+                # Skip vizzy_t_test if we're in production
+                if self.production and category == 'test':
+                    pass
+                else:
+                    for sub in self.data['subreddits'][category]:
+                        if sub not in subs:
+                            subs.append(sub)
+            sublist = '+'.join(subs)
+            return sublist
 
 
     def funny_business(self,text):
@@ -100,68 +138,43 @@ class kingbot:
         else:
             return "None"
 
-    def is_triggered(self, text, respondable_bots, sub):
-        """Multi-function, updated 2023-2-23"""
-        triggered = []
+    def is_triggered(self, text, sub):
 
+        sublist = self.data['subreddits']
+        if self.production:
+            subs = sublist['primary'] + sublist['other']
+        else:
+            subs = ['vizzy_t_test']
 
+        if sub in subs:
+            for word in self.data['keywords']:
+                if word in text.lower():
+                    return True
 
-        for bot in self.all_bots:
-
-            sublist = self.all_bots[bot]['subreddits']
-            if self.production:
-                subs = sublist['primary'] + sublist['other']
-            else:
-                subs = ['vizzy_t_test']
-
-            if sub in subs:
-
-                for word in self.all_bots[bot]['keywords']:
-                    if word in text.lower() and bot not in triggered and bot in respondable_bots:
-                        triggered.append(bot)
-
-        return triggered
+        return False
 
     def skip_checker(self, author, id):
-        """
-        Multi-function, updated 2023-2-23
-        Check to see if we should skip this thing
 
-        Makes sure we ignore deleted comments,
-        Don't respond to our own comments
-        And don't respond to comments we already responded to
+        # Skip if the author is None (Someone deleted something)
+        if author is None:
+            return True
 
-        Anything in the skips list will be responded to, which is...backwards lol
-        """
+        # Skip if the author is the same as the bot
+        elif author.lower() == 'vizzy_t_bot':
+            return True
 
-        skips = []
+        # Skip if the comment ID is in the database already
+        elif self.db.check_db(id, 'vizzy_t_bot'):
+            return True
 
-
-
-        for bot in self.all_bots:
-
-            # Skip if the author is None (Someone deleted something)
-            if author is None:
-                pass
-
-            # Skip if the author is the same as the bot
-            elif author.lower() == bot.lower():
-                pass
-
-            # Skip if the comment ID is in the database already
-            elif self.db.check_db(id, bot.lower()):
-                pass
-
-            # Otherwise, don't skip.
-            else:
-                skips.append(bot)
-
-        return skips
+        # Otherwise, don't skip.
+        else:
+            return False
 
     def get_details(self, object):
         """
         Multi-function, updated 2023-2-23
-        Load the details of a post / comment, helpful for keeping bots from crashing on deleted things
+        Load the details of a post / comment, helpful for keeping data from crashing on deleted things
         """
 
         # Get the author name
@@ -172,31 +185,22 @@ class kingbot:
         # Get the author name
         author_original = object.author.name
 
-        respondable_bots = self.skip_checker(author,object.id)
+        should_skip = self.skip_checker(author,object.id)
 
-        if not respondable_bots:
+        if should_skip:
             return False, False, False, False, False, False, False
 
         else:
-            # Okay, the list "skip" has 1-2 bots in it that could possibly respond
-
-            # If this is a comment, grab the comment body
             if isComment(object):
-
-                text = object.body
+                text = object.body.lower()
 
             else:
-
-                text = object.title + "\n" + object.selftext
-
-
-            text = text.lower()
+                text = (object.title + "\n" + object.selftext).lower()
 
             permalink = f'https://www.reddit.com{object.permalink}'
 
-            # Returns a list of triggered bots
-            triggered = self.is_triggered(text, respondable_bots, sub)
-
+            # Returns a list of triggered data
+            triggered = self.is_triggered(text, sub)
 
             # This is only for Vizzy T
             funny = self.funny_business(text)
@@ -204,13 +208,13 @@ class kingbot:
             return author, author_original, text, permalink, object.id, triggered, funny
 
 
-    def sentience_checker(self,author, text, bot):
+    def sentience_checker(self,author, text):
         """
         Updated 2023-2-23
         Check if a response should be sentient.  Takes multiple factors into consideration."""
 
-        maesters = self.all_bots[bot]['maesters']
-        ai = self.all_bots[bot]['sentience']
+        maesters = self.data['maesters']
+        ai = self.data['sentience']
 
         # If Sentience is disabled in the config, we won't be sentient.  Still allows for Maesters.
         if ai['enabled'] is False and author not in maesters:
@@ -246,7 +250,7 @@ class kingbot:
 
         return response
 
-    def pull_quote(self, author, bot):
+    def pull_quote(self, author):
         """
         Updated 2023-2-23
         Sending a normal, random response"""
@@ -255,7 +259,7 @@ class kingbot:
         seed()
 
         # Grab a quote
-        response = choice(self.all_bots[bot]['quotes'])
+        response = choice(self.data['quotes'])
 
         # Fill in user's username if applicable to this quote
         if "{}" in response:
@@ -264,28 +268,27 @@ class kingbot:
         return response
 
 
-    def thekingspeaks(self, redditObject, author, text, bot):
+    def thekingspeaks(self, redditObject, author, text):
         """Primary function, processes everything"""
-        tmp_name = self.all_bots[bot]['sentience']['sentient_name']
 
-        xxx = self.sentience_checker(author.lower(), text, bot)
+        shouldBeSentient = self.sentience_checker(author.lower(), text)
 
         # If we should be sentient...
-        if xxx:
+        if shouldBeSentient:
 
             # Get a sentient response and associated cost
-            response, cost = get_sentient(redditObject, self.all_bots[bot])
+            response, cost = get_sentient(redditObject, self.data)
 
-            description = f"{tmp_name} made a sentient comment"
+            description = "Vizzy T made a sentient comment"
 
-            self.db.usage_dump(author, author, f"{tmp_name} Sentience", text, response, redditObject.subreddit.display_name, redditObject.permalink, cost)
+            self.db.usage_dump(author, author, "Vizzy T Sentience", text, response, redditObject.subreddit.display_name, redditObject.permalink, cost)
 
+        # Otherwise, get a random quote.
         else:
-
             # Generate the bot's response
-            response = self.pull_quote(author, bot)
+            response = self.pull_quote(author)
             cost = None
-            description = f"{tmp_name} made a canon comment"
+            description = "Vizzy T made a canon comment"
 
         # Check if Vizzy should show off his tapestries
         if 'tapestries' in response.lower():
@@ -298,8 +301,8 @@ class kingbot:
             description += "."
 
 
-        self.make_comment(redditObject, response, bot)
-        self.db.write_obj(redditObject.id, bot)
+        self.make_comment(redditObject, response)
+        self.db.write_obj(redditObject.id)
 
         print("Dumped comment!")
 
@@ -318,44 +321,39 @@ class kingbot:
         """
 
         # Iterate through all the posts / comments
-        for object in self.stream:
+        for reddit_object in self.stream:
             try:
 
                 # Grab info from the thing
-                author, author_original, text, permalink, comment_id, is_triggered, deviant = self.get_details(object)
+                author, author_original, text, permalink, comment_id, is_triggered, deviant = self.get_details(reddit_object)
 
-                # If there's no author, no text, and we're not triggered, skip it
-                if not author and not text and not is_triggered:
-                    pass
+                if not is_triggered:
+                    continue
+
+                elif not author and not text:
+                    continue
 
                 else:
-                    if deviant == "mustache" and 'vizzy_t_bot' in is_triggered:
+                    if deviant == "mustache" and is_triggered:
                         print("Processing this post because it has a mustache and we're Vizzy T")
 
                         response = '[*...I know.*](https://thc-lab.net/static/i-know.gif)'
 
-                        object.reply(body=response)
+                        reddit_object.reply(body=response)
 
                         self.db.write_obj(comment_id, "vizzy_t_bot")
-
-                    # Skip if we're not triggered
-                    # This still works even though I changed it to a list
-                    # Just move on if there's no triggers.
-                    elif not is_triggered:
-                        pass
 
                     # We are triggered and nothing else interesting should happen.
                     else:
 
-                        for bot in is_triggered:
+                        print(f"We're processing {comment_id} because no one told us not to!")
 
-                            print("We're processing this post because no one told us not to!")
-
-                            # Reply to the comment
-                            # This function takes care of EVERYTHING
-                            #
-                            # Except for sending the webhook which is sent afterword
-                            response, cost, description = self.thekingspeaks(object, author_original, text, bot)
+                        # Reply to the comment
+                        # This function takes care of EVERYTHING
+                        #
+                        # Except for sending the webhook which is sent afterword
+                        response, cost, description = self.thekingspeaks(reddit_object, author_original, text)
+                        print(response)
 
 
             except Exception as e:
@@ -369,9 +367,7 @@ class kingbot:
                     pass
 
 
-
 # GODS BE GOOD
-
 while True:
     try:
         kingbot = kingbot().run()
